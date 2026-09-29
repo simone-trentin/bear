@@ -9,56 +9,43 @@ const port = 3000;
 app.use(cors());
 app.use(express.json());
 
-//configurazione della connessione al database
+// configurazione della connessione al database
 const pool = new Pool({
-    user: 'postgres',
-    host: 'localhost',
-    database: 'bear_db',
-    password: 'BearPass',
-    port: 5432,
+  user: 'postgres',
+  host: 'localhost',
+  database: 'bear_db',
+  password: 'BearPass',
+  port: 5432,
 });
 
-//test
+// test
 app.get('/', (req, res) => {
-    res.send('Il server BearTracker funziona perfettamente!');
+  res.send('Il server BearTracker funziona perfettamente!');
 });
 
-//salva un nuovo avvistamento nel database
+// salva un nuovo avvistamento nel database (aggiornato per PostGIS)
 app.post('/api/sightings', async (req, res) => {
-    try {
-        const { latitude, longitude } = req.body;
-        const newSighting = await pool.query(
-            'INSERT INTO sightings (latitude, longitude) VALUES ($1, $2) RETURNING *',
-            [latitude, longitude]
-        );
-        res.json(newSighting.rows[0]);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Errore durante il salvataggio');
-    }
+  try {
+    const { latitude, longitude } = req.body;
+    const query = `
+      INSERT INTO sightings (timestamp, location, description)
+      VALUES (NOW(), ST_SetSRID(ST_MakePoint($1, $2), 4326), 'Avvistamento inserito manualmente')
+      RETURNING id, timestamp, description, ST_X(location::geometry) AS longitude, ST_Y(location::geometry) AS latitude
+    `;
+    // Passiamo prima la longitudine (ST_MakePoint vuole X, Y)
+    const result = await pool.query(query, [longitude, latitude]);
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).send('Errore durante il salvataggio');
+  }
 });
 
-//recupera tutti gli avvistamenti per mostrarli sulla mappa
-app.get('/api/sightings', async (req, res) => {
-    try {
-        const allSightings = await pool.query('SELECT * FROM sightings ORDER BY timestamp DESC');
-        res.json(allSightings.rows);
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).send('Errore nel recupero dei dati');
-    }
-});
-
-//avvio del server
-app.listen(port, () => {
-    console.log(`Server backend in ascolto su http://localhost:${port}`);
-});
-
-// Nuova API per la ricerca spazio-temporale
+// ricerca spazio-temporale
 app.post('/api/sightings/search', async (req, res) => {
   const { startDate, endDate, polygon } = req.body;
   
-  // Costruiamo la query di base. Usiamo ST_X e ST_Y per restituire lat/lon pulite al frontend
+  // query di base, uso ST_X e ST_Y per restituire lat/lon pulite al frontend
   let query = `
     SELECT id, timestamp, description, 
            ST_X(location::geometry) AS longitude, 
@@ -69,24 +56,24 @@ app.post('/api/sightings/search', async (req, res) => {
   const values = [];
   let paramIndex = 1;
 
-  // Filtro data di inizio
+  // filtro data di INIZIO
   if (startDate) {
     query += ` AND timestamp >= $${paramIndex}`;
     values.push(startDate);
     paramIndex++;
   }
 
-  // Filtro data di fine
+  // filtro data di FINE
   if (endDate) {
     query += ` AND timestamp <= $${paramIndex}`;
     values.push(endDate);
     paramIndex++;
   }
 
-  // Filtro spaziale con PostGIS
+  // filtro SPAZIALE con PostGIS
   if (polygon) {
     // ST_GeomFromGeoJSON converte la geometria del client nel formato PostGIS
-    // ST_Intersects controlla se il punto (location) cade all'interno del poligono
+    // ST_Intersects controlla se il punto cade all'interno del poligono
     query += ` AND ST_Intersects(location, ST_SetSRID(ST_GeomFromGeoJSON($${paramIndex}), 4326))`;
     values.push(JSON.stringify(polygon)); 
     paramIndex++;
@@ -99,4 +86,9 @@ app.post('/api/sightings/search', async (req, res) => {
     console.error("Errore nella ricerca:", err);
     res.status(500).json({ error: "Errore durante il filtraggio dei dati" });
   }
+});
+
+// avvio del server
+app.listen(port, () => {
+  console.log(`Server backend in ascolto su http://localhost:${port}`);
 });
